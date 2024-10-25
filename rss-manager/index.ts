@@ -2,6 +2,7 @@ import { PubSub } from '@google-cloud/pubsub';
 import * as RSSParser from 'rss-parser';
 import type { Request, Response } from 'express';
 import { Firestore } from '@google-cloud/firestore';
+// import { PubsubMessage } from '@google-cloud/pubsub/build/src/publisher/pubsub-message';
 
 const db = new Firestore({
   databaseId: 'rss-manager',
@@ -33,9 +34,19 @@ export const rssRegister = async (req: Request, res: Response) => {
   }
 };
 
+// https://cloud.google.com/functions/docs/writing/background#function_parameters
+// type PubSubContext = {
+//   eventId: string;
+//   timestamp: string;
+//   eventType: string;
+//   resource: {
+//     service: string;
+//     name: string;
+//   };
+// };
 const pubSubClient = new PubSub();
 // Cloud Scheduler によって定期的に RSS フィードをチェックする関数
-export const checkRssFeeds = async (event: any, context: any) => {
+export const checkRssFeeds = async (req: Request, res: Response) => {
   try {
     // Firestore に登録された RSS フィードの URL を取得
     const snapshot = await db.collection(COLLECTION_NAME).get();
@@ -55,21 +66,29 @@ export const checkRssFeeds = async (event: any, context: any) => {
       const lastCheckedItemGuid = rssData.lastCheckedGuid;
 
       // 新しいアイテムを検出
-      const newItems = feed.items.filter(
-        (item) => item.guid !== lastCheckedItemGuid
+      const lastIndex = feed.items.findIndex(
+        (item) => item.guid === lastCheckedItemGuid
       );
+      const newItems = feed.items.slice(0, Math.max(0, lastIndex));
 
       if (newItems.length > 0) {
         // 新しいアイテムがあれば Pub/Sub に通知
         for (const item of newItems) {
-          const messageBuffer = Buffer.from(
-            JSON.stringify({
-              title: item.title,
-              link: item.link,
-              pubDate: item.pubDate,
-            })
-          );
-          // await pubSubClient.topic('rss-manager').publish(messageBuffer);
+          // const messageBuffer = Buffer.from(
+          //   JSON.stringify({
+          //     title: item.title,
+          //     link: item.link,
+          //     pubDate: item.pubDate,
+          //   })
+          // );
+          const message = {
+            title: item.title,
+            link: item.link,
+            pubDate: item.pubDate,
+          };
+          await pubSubClient
+            .topic('rss-updates')
+            .publishMessage({ json: message });
           console.log(`New item published to Pub/Sub: ${item.title}`);
         }
 
