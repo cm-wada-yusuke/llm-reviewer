@@ -42,9 +42,9 @@ export async function geminiReviewer(message: PubsubMessage) {
   }
 
   const feedItem: FeedItemType = JSON.parse(feedItemString) as FeedItemType;
-  const contentUrl = feedItem.link;
-  const contentTitle = feedItem.title;
-  const bodyHtml = await parseBodyHtml(contentUrl);
+  const contentUrl = feedItem.link; // レビュー対象記事のURL
+  const contentTitle = feedItem.title; // レビュー対象記事のタイトル
+  const bodyHtml = await parseBodyHtml(contentUrl); // レビュー対象記事のHTML
 
   // レビューリクエスト用のデータ
   const agenda = await getMediaPolicyPrompt(
