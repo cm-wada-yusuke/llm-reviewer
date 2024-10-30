@@ -3,7 +3,6 @@ import fetch from 'node-fetch';
 import { WebClient } from '@slack/web-api';
 import * as cheerio from 'cheerio';
 import { PubsubMessage } from '@google-cloud/pubsub/build/src/publisher/pubsub-message';
-import path = require('path');
 import { Firestore } from '@google-cloud/firestore';
 
 const projectId = process.env.PROJECT_ID;
@@ -44,15 +43,28 @@ export async function geminiReviewer(message: PubsubMessage) {
 
   const feedItem: FeedItemType = JSON.parse(feedItemString) as FeedItemType;
   const contentUrl = feedItem.link;
+  const contentTitle = feedItem.title;
   const bodyHtml = await parseBodyHtml(contentUrl);
 
   // レビューリクエスト用のデータ
-  const llmRequestMediaPolicyBody = {
+  const agenda = await getMediaPolicyPrompt(
+    bodyHtml,
+    'メディアポリシーに対する全体的な評価を行ってください'
+  );
+  const fix = await getMediaPolicyPrompt(
+    bodyHtml,
+    'メディアポリシーに対する問題箇所の指摘と改善案を出してください'
+  );
+  const good = await getMediaPolicyPrompt(
+    bodyHtml,
+    'メディアポリシーに沿った良い点を記載してください'
+  );
+  const [agendaBody, fixBody, goodBody] = [agenda, fix, good].map((prompt) => ({
     contents: {
       role: 'user',
       parts: [
         {
-          text: await getMediaPolicyPrompt(bodyHtml),
+          text: prompt,
         },
       ],
     },
@@ -62,7 +74,7 @@ export async function geminiReviewer(message: PubsubMessage) {
       top_p: 0.8, // トークン選択の多様性を調整
       top_k: 40, // 上位 K 個のトークンをサンプリング
     },
-  };
+  }));
 
   const llmRequestTypographyBody = {
     contents: {
@@ -86,40 +98,13 @@ export async function geminiReviewer(message: PubsubMessage) {
     scopes: 'https://www.googleapis.com/auth/cloud-platform',
   });
   const client = await auth.getClient();
-  const accessToken = await client.getAccessToken();
+  const accessToken = (await client.getAccessToken()).token || '';
 
-  // リクエストのオプションを設定
-  const options = {
-    method: 'POST', // リクエストメソッド
-    body: JSON.stringify(llmRequestMediaPolicyBody),
-    headers: {
-      Authorization: `Bearer ${accessToken.token}`,
-      'Content-Type': 'application/json',
-    },
-  };
-
-  const typoGraphyOptions = {
-    method: 'POST', // リクエストメソッド
-    body: JSON.stringify(llmRequestTypographyBody),
-    headers: {
-      Authorization: `Bearer ${accessToken.token}`,
-      'Content-Type': 'application/json',
-    },
-  };
-
-  // Vertex AI API に対してリクエストを送信
-  const mediaPolicyResponse = await fetch(vertexAiEndpoint, options);
-  const mediaPolicyResponseJson: any = await mediaPolicyResponse.json();
-  console.log(mediaPolicyResponseJson);
-  const mediaPolicyResponseText =
-    mediaPolicyResponseJson['candidates'][0]['content']['parts'][0]['text'];
-
-  // Vertex AI API に対してリクエストを送信（誤字脱字チェック）
-  const typographyResponse = await fetch(vertexAiEndpoint, typoGraphyOptions);
-  const typographyResponseJson: any = await typographyResponse.json();
-  console.log(typographyResponseJson);
-  const typographyResponseText =
-    typographyResponseJson['candidates'][0]['content']['parts'][0]['text'];
+  // Vertex AI にリクエストを送信
+  const mediaPolicyAgenda = await fetchVertexAi(accessToken, agendaBody);
+  const mediaPolicyFix = await fetchVertexAi(accessToken, fixBody);
+  const mediaPolicyGood = await fetchVertexAi(accessToken, goodBody);
+  const typo = await fetchVertexAi(accessToken, llmRequestTypographyBody);
 
   // Slack クライアントを初期化
   const slackClient = new WebClient(secretSlackToken);
@@ -132,7 +117,7 @@ export async function geminiReviewer(message: PubsubMessage) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: `*レビューした記事*\n${contentUrl}`,
+          text: `*レビューした記事*\n <${contentUrl}|${contentTitle}>`,
         },
       },
       {
@@ -146,7 +131,42 @@ export async function geminiReviewer(message: PubsubMessage) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: mediaPolicyResponseText,
+          text: '*全体的な評価*',
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: mediaPolicyAgenda,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*問題開所の指摘と改善案*',
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: mediaPolicyFix,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: '*メディアポリシーに沿った良い点*',
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: mediaPolicyGood,
         },
       },
       {
@@ -160,7 +180,7 @@ export async function geminiReviewer(message: PubsubMessage) {
         type: 'section',
         text: {
           type: 'mrkdwn',
-          text: typographyResponseText,
+          text: typo,
         },
       },
     ],
@@ -169,28 +189,39 @@ export async function geminiReviewer(message: PubsubMessage) {
   return;
 }
 
-async function getMediaPolicyPrompt(html: string): Promise<string> {
+async function getMediaPolicyPrompt(
+  html: string,
+  context: string
+): Promise<string> {
   try {
     // rss-manager データベースの prompts コレクション、mediaPolicy ドキュメントの promptBody フィールドを取得
     const docRef = firestore.collection(collectionName).doc('mediaPolicy');
     const doc = await docRef.get();
 
+    const outputRef = firestore.collection(collectionName).doc('output');
+    const outputDoc = await outputRef.get();
+
     // ドキュメントが存在しない場合のエラーハンドリング
-    if (!doc.exists) {
+    if (!doc.exists || !outputDoc.exists) {
       return '「プロンプトが見つかりませんでした」というテキストを返して下さい。';
     }
 
     // promptBody フィールドの値を取得
     const promptBody = doc.get('promptBody');
+    const outputBody = outputDoc.get('promptBody');
 
     // promptBody が存在するか確認
-    if (promptBody === undefined) {
+    if (promptBody === undefined || outputBody === undefined) {
       return '「プロンプトが見つかりませんでした」というテキストを返して下さい。';
     }
 
     // promptBody の値をレスポンスとして返す
-    return `
+    const prompt = `
     ${promptBody}
+
+    ${context}
+
+    ${outputBody}
 
     "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" で囲まれている文章についてレビューしてください。
     
@@ -198,6 +229,8 @@ async function getMediaPolicyPrompt(html: string): Promise<string> {
     ${html}
     =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
       `;
+    console.log(prompt);
+    return prompt;
   } catch (error) {
     console.error('Error retrieving promptBody:', error);
     return '「エラーが発生しました」というテキストを返して下さい。';
@@ -210,22 +243,28 @@ async function getTypographyPrompt(html: string): Promise<string> {
     const docRef = firestore.collection(collectionName).doc('typo');
     const doc = await docRef.get();
 
+    const outputRef = firestore.collection(collectionName).doc('output');
+    const outputDoc = await outputRef.get();
+
     // ドキュメントが存在しない場合のエラーハンドリング
-    if (!doc.exists) {
+    if (!doc.exists || !outputDoc.exists) {
       return '「プロンプトが見つかりませんでした」というテキストを返して下さい。';
     }
 
     // promptBody フィールドの値を取得
     const promptBody = doc.get('promptBody');
+    const outputBody = outputDoc.get('promptBody');
 
     // promptBody が存在するか確認
-    if (promptBody === undefined) {
+    if (promptBody === undefined || outputBody === undefined) {
       return '「プロンプトが見つかりませんでした」というテキストを返して下さい。';
     }
 
     // promptBody の値をレスポンスとして返す
-    return `
+    const prompt = `
     ${promptBody}
+
+    ${outputBody}
 
     "=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=" で囲まれている文章についてレビューしてください。
     
@@ -233,6 +272,9 @@ async function getTypographyPrompt(html: string): Promise<string> {
     ${html}
     =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
       `;
+
+    console.log(prompt);
+    return prompt;
   } catch (error) {
     console.error('Error retrieving promptBody:', error);
     return '「エラーが発生しました」というテキストを返して下さい。';
@@ -242,4 +284,24 @@ async function getTypographyPrompt(html: string): Promise<string> {
 async function parseBodyHtml(url: string): Promise<string> {
   const $ = await cheerio.fromURL(url);
   return $('body div.znc').html() || '';
+}
+
+async function fetchVertexAi(
+  accessToken: string,
+  geminiRequestBody: any
+): Promise<string> {
+  const option = {
+    method: 'POST', // リクエストメソッド
+    body: JSON.stringify(geminiRequestBody),
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    },
+  };
+  const response = await fetch(vertexAiEndpoint, option);
+  const responseJson: any = await response.json();
+  console.log({ responseJson: JSON.stringify(responseJson['candidates']) });
+  const text = responseJson['candidates'][0]['content']['parts'][0]['text'];
+  console.log({ responseText: text });
+  return text;
 }
