@@ -1,0 +1,30 @@
+{
+  "private": true,
+  "name": "gemini-reviewer",
+  "version": "0.1.0",
+  "scripts": {
+    "emulate": "npm run build && npx @google-cloud/functions-framework --port 3023 --target=geminiReviewer",
+    "build": "tsc -p .",
+    "gcp-build": "yarn run build"
+  },
+  "dependencies": {
+    "@google-cloud/pubsub": "^4.7.2",
+    "@google-cloud/secret-manager": "^5.6.0",
+    "@slack/web-api": "^7.5.0",
+    "cheerio": "^1.0.0",
+    "google-auth-library": "^9.14.1",
+    "node-fetch": "^2",
+    "textlint": "^14.3.0",
+    "textlint-plugin-html": "^1.0.1",
+    "textlint-rule-preset-ja-technical-writing": "^10.0.1",
+    "@google-cloud/firestore": "^7.10.0"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.17",
+    "@types/node": "^18.15.10",
+    "@types/node-fetch": "^2.6.11",
+    "prettier": "^2.8.7",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.0.2"
+  }
+}

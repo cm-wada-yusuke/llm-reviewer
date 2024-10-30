@@ -1,0 +1,9 @@
+{
+  "plugins": ["html"],
+  "filters": {
+    "comments": true
+  },
+  "rules": {
+    "preset-ja-technical-writing": true
+  }
+}

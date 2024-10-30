@@ -2,7 +2,6 @@ import { PubSub } from '@google-cloud/pubsub';
 import * as RSSParser from 'rss-parser';
 import type { Request, Response } from 'express';
 import { Firestore } from '@google-cloud/firestore';
-// import { PubsubMessage } from '@google-cloud/pubsub/build/src/publisher/pubsub-message';
 
 const db = new Firestore({
   databaseId: 'rss-manager',
@@ -10,7 +9,7 @@ const db = new Firestore({
 const parser = new RSSParser();
 
 // Firestore のコレクション名
-const COLLECTION_NAME = 'rss-feeds';
+const collectionName = 'rss-feeds';
 
 // RSS フィードの URL を Firestore に登録する HTTP 関数
 export const rssRegister = async (req: Request, res: Response) => {
@@ -23,7 +22,7 @@ export const rssRegister = async (req: Request, res: Response) => {
 
   try {
     // Firestore に RSS URL を保存
-    await db.collection(COLLECTION_NAME).add({
+    await db.collection(collectionName).add({
       url: rssUrl,
       lastCheckedGuid: null, // 初回は null を設定して新しい記事を全て検出する
     });
@@ -34,22 +33,12 @@ export const rssRegister = async (req: Request, res: Response) => {
   }
 };
 
-// https://cloud.google.com/functions/docs/writing/background#function_parameters
-// type PubSubContext = {
-//   eventId: string;
-//   timestamp: string;
-//   eventType: string;
-//   resource: {
-//     service: string;
-//     name: string;
-//   };
-// };
-const pubSubClient = new PubSub();
 // Cloud Scheduler によって定期的に RSS フィードをチェックする関数
+const pubSubClient = new PubSub();
 export const checkRssFeeds = async (req: Request, res: Response) => {
   try {
     // Firestore に登録された RSS フィードの URL を取得
-    const snapshot = await db.collection(COLLECTION_NAME).get();
+    const snapshot = await db.collection(collectionName).get();
     if (snapshot.empty) {
       console.log('No RSS URLs found.');
     }
@@ -66,21 +55,20 @@ export const checkRssFeeds = async (req: Request, res: Response) => {
       const lastCheckedItemGuid = rssData.lastCheckedGuid;
 
       // 新しいアイテムを検出
-      const lastIndex = feed.items.findIndex(
-        (item) => item.guid === lastCheckedItemGuid
-      );
+      const lastIndex = (() => {
+        if (!lastCheckedItemGuid) {
+          return feed.items.length;
+        } else {
+          return feed.items.findIndex(
+            (item) => item.guid === lastCheckedItemGuid
+          );
+        }
+      })();
       const newItems = feed.items.slice(0, Math.max(0, lastIndex));
 
       if (newItems.length > 0) {
         // 新しいアイテムがあれば Pub/Sub に通知
         for (const item of newItems) {
-          // const messageBuffer = Buffer.from(
-          //   JSON.stringify({
-          //     title: item.title,
-          //     link: item.link,
-          //     pubDate: item.pubDate,
-          //   })
-          // );
           const message = {
             title: item.title,
             link: item.link,
@@ -95,12 +83,17 @@ export const checkRssFeeds = async (req: Request, res: Response) => {
         // 最新のアイテムの GUID を Firestore に更新
         const latestItem = newItems[0];
         await doc.ref.update({ lastCheckedGuid: latestItem.guid });
+        res
+          .status(200)
+          .send(`Items published to Pub/Sub: lastItem: ${latestItem.title}`);
       } else {
         console.log(`No new items for feed: ${rssUrl}`);
+        res.status(200).send(`No new items for feed: ${rssUrl}`);
       }
     }
   } catch (error) {
     console.error('Error checking RSS feeds:', error);
+    res.status(200).send('Error checking RSS feeds');
     throw new Error('Failed to check RSS feeds');
   }
 };
