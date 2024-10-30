@@ -70,7 +70,7 @@ export async function geminiReviewer(message: PubsubMessage) {
     },
     generation_config: {
       temperature: 0.7, // 生成の多様性を調整 (0.0 - 1.0)
-      max_output_tokens: 256, // 生成される最大トークン数
+      max_output_tokens: 1000, // 生成される最大トークン数
       top_p: 0.8, // トークン選択の多様性を調整
       top_k: 40, // 上位 K 個のトークンをサンプリング
     },
@@ -87,7 +87,7 @@ export async function geminiReviewer(message: PubsubMessage) {
     },
     generation_config: {
       temperature: 0.7, // 生成の多様性を調整 (0.0 - 1.0)
-      max_output_tokens: 256, // 生成される最大トークン数
+      max_output_tokens: 1000, // 生成される最大トークン数
       top_p: 0.8, // トークン選択の多様性を調整
       top_k: 40, // 上位 K 個のトークンをサンプリング
     },
