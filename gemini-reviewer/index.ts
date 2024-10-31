@@ -49,15 +49,15 @@ export async function geminiReviewer(message: PubsubMessage) {
   // レビューリクエスト用のデータ
   const agenda = await getMediaPolicyPrompt(
     bodyHtml,
-    'メディアポリシーに対する全体的な評価を行ってください'
+    'メディアポリシーに対する全体的な評価を行ってください。結果は3文から5文で簡潔にお願いします。'
   );
   const fix = await getMediaPolicyPrompt(
     bodyHtml,
-    'メディアポリシーに対する問題箇所の指摘と改善案を出してください'
+    'メディアポリシーに対する問題箇所の指摘と改善案を出してください。'
   );
   const good = await getMediaPolicyPrompt(
     bodyHtml,
-    'メディアポリシーに沿った良い点を記載してください'
+    'メディアポリシーに沿った良い点を記載してください。結果は3文から5文で簡潔にお願いします。'
   );
   const [agendaBody, fixBody, goodBody] = [agenda, fix, good].map((prompt) => ({
     contents: {
